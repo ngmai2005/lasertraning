@@ -10,8 +10,6 @@ from datetime import datetime
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ================= CONFIG =================
-WIDTH, HEIGHT = 1280, 720
-IMAGE_SIZE = 500
 CAM_INDEX = 0
 FLIP_MODE = 1
 
@@ -19,12 +17,11 @@ SHOT_COOLDOWN = 0.12
 MAX_BULLETS = 16
 TARGET_TIME = 15
 
-
 # ================= SOUND =================
 def play_hit_sound():
     threading.Thread(
         target=playsound,
-        args=("sounds/hit.mp3",),
+        args=("static/sounds/hit.mp3",),
         daemon=True
     ).start()
 
@@ -48,14 +45,13 @@ def play_result_sound(rank):
     playsound(path)
 
 # ================= LOAD TARGET IMAGES =================
-TARGET_IMAGES = []
+TARGET_IMAGES_RAW = []
 for i in range(1, 5):
     img = cv2.imread(f"static/images/target{i}.png")
     if img is None:
         print(f"❌ Thiếu images/target{i}.png")
         exit()
-    TARGET_IMAGES.append(cv2.resize(img, (IMAGE_SIZE, IMAGE_SIZE)))
-
+    TARGET_IMAGES_RAW.append(img)
 
 # ================= DETECT LASER =================
 def detect_laser(frame):
@@ -89,12 +85,12 @@ def detect_laser(frame):
 # ================= MAIN =================
 def main():
     cap = cv2.VideoCapture(CAM_INDEX)
-    cap.set(3, 1920)
-    cap.set(4, 1080)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
     cv2.namedWindow("Laser Trainer", cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty("Laser Trainer", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
+    is_fullscreen = False
     score = bullets = hits = 0
     phase = 1
     sub_target = 2
@@ -117,6 +113,13 @@ def main():
 
         frame = cv2.flip(frame, FLIP_MODE)
         H, W = frame.shape[:2]
+
+        IMAGE_SIZE = int(H * 0.55)
+
+        TARGET_IMAGES = [
+            cv2.resize(img, (IMAGE_SIZE, IMAGE_SIZE))
+            for img in TARGET_IMAGES_RAW
+        ]
 
         laser_now, laser_pos = detect_laser(frame)
         now = time.time()
@@ -298,6 +301,14 @@ def main():
 
         cv2.imshow("Laser Trainer", canvas)
 
+        if not is_fullscreen:
+            cv2.setWindowProperty(
+                "Laser Trainer",
+                cv2.WND_PROP_FULLSCREEN,
+                cv2.WINDOW_FULLSCREEN
+            )
+            is_fullscreen = True
+
         key = cv2.waitKey(1) & 0xFF
         if key == 27:
             break
@@ -313,6 +324,12 @@ def main():
             move_x = 100
             direction = 1
             tts_spoken = False
+
+            IMAGE_SIZE = int(H * 0.55)
+            TARGET_IMAGES = [
+                cv2.resize(img, (IMAGE_SIZE, IMAGE_SIZE))
+                for img in TARGET_IMAGES_RAW
+            ]
 
     cap.release()
     cv2.destroyAllWindows()

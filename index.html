@@ -4,28 +4,65 @@
 <meta charset="UTF-8">
 <title>Laser Target Trainer</title>
 <style>
-  body { margin:0; overflow:hidden; background:#111; }
-  canvas { display:block; margin:auto; background:#222; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #111;
+  }
+  canvas {
+    display: block;
+    background: #000;
+  }
 </style>
 </head>
 <body>
-<canvas id="gameCanvas" width="1280" height="720"></canvas>
+
+<canvas id="gameCanvas"></canvas>
+
 <script>
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
+const CAM_W = 1280;
+const CAM_H = 720;
+let audioUnlocked = false;
 
-const IMAGE_SIZE = 500;
+// ===== FULLSCREEN RESIZE =====
+function resizeCanvas(){
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+}
+window.addEventListener("resize", resizeCanvas);
+resizeCanvas();
+
+// ===== SCALE FACTOR =====
+function sx(x){ return x * canvas.width / CAM_W; }
+function sy(y){ return y * canvas.height / CAM_H; }
+
+// ===== GAME CONFIG =====
 const MAX_BULLETS = 16;
-const SHOT_COOLDOWN = 120; // ms
-const TARGET_TIME = 15000; // ms
+const SHOT_COOLDOWN = 120;
+const TARGET_TIME = 15000;
+
+function imageSize(){
+    let size = canvas.height * 0.55;
+
+    size = Math.max(480, size);
+    size = Math.min(820, size);
+
+    return Math.floor(size);
+}
 
 // ===== STATE =====
-let phase = 1, subTarget = 2, score = 0, bullets = 0, hits = 0;
+let phase = 1, subTarget = 2, score = 0, bullets = 0;
 let round = 1, MAX_ROUND = 2;
 let phaseStart = Date.now();
 let lastShot = 0, laserPrev = false;
 let moveX = 100, direction = 1;
 let ttsPlayed = false;
+let lastLaserOn = false;
 
 // ===== LOAD TARGETS =====
 const targets = [];
@@ -36,23 +73,64 @@ for(let i=1;i<=4;i++){
 }
 
 // ===== LOAD SOUNDS =====
-const hitSound = new Audio("/static/sounds/hit.mp3");
+function fireShot(){
+    bullets++;
+
+    if(audioUnlocked){
+        hitSound.pause();
+        hitSound.currentTime = 0;
+        hitSound.play().catch(()=>{});
+    }
+}
+
+function loadSound(path){
+    const a = new Audio(path);
+    a.preload = "auto";
+
+    a.addEventListener("error", ()=>{
+        console.error("❌ Audio load failed:", path);
+    });
+
+    a.addEventListener("canplaythrough", ()=>{
+        console.log("✅ Audio loaded:", path);
+    });
+
+    return a;
+}
+
+const hitSound = loadSound("/static/sounds/hit.mp3");
+
 const resultSounds = {
-  "GIOI": new Audio("/static/sounds/result_gioi.mp3"),
-  "KHA": new Audio("/static/sounds/result_kha.mp3"),
-  "DAT": new Audio("/static/sounds/result_dat.mp3"),
-  "KHONG DAT": new Audio("/static/sounds/result_khong_dat.mp3")
+  "GIOI": loadSound("/static/sounds/result_gioi.mp3"),
+  "KHA": loadSound("/static/sounds/result_kha.mp3"),
+  "DAT": loadSound("/static/sounds/result_dat.mp3"),
+  "KHONG DAT": loadSound("/static/sounds/result_khong_dat.mp3")
 };
+
+function unlockAudio() {
+    if (audioUnlocked) return;
+
+    const silent = new Audio();
+    silent.src = "/static/sounds/hit.mp3"; // dùng file có sẵn
+    silent.volume = 0;
+    silent.play().then(() => {
+        audioUnlocked = true;
+        console.log("Audio unlocked");
+    }).catch(() => {});
+}
+document.addEventListener("keydown", unlockAudio, { once: true });
+document.addEventListener("mousedown", unlockAudio, { once: true });
 
 // ===== LASER FETCH =====
 let laserPos = null;
 let laserNow = false;
+
 async function fetchLaser(){
     try {
-        const res = await fetch("/laser");
-        const data = await res.json();
-        laserNow = data.x!==null;
-        laserPos = laserNow ? [data.x, data.y] : null;
+        const r = await fetch("/laser");
+        const d = await r.json();
+        laserNow = d.x !== null;
+        laserPos = laserNow ? [d.x, d.y] : null;
     } catch {
         laserNow = false;
         laserPos = null;
@@ -60,173 +138,240 @@ async function fetchLaser(){
 }
 setInterval(fetchLaser, 30);
 
-// ===== SHOT LOGIC =====
-function shotFired(){
-    const now = Date.now();
-    if(laserNow && !laserPrev && now - lastShot > SHOT_COOLDOWN && bullets < MAX_BULLETS){
-        lastShot = now;
-        bullets++;
-        return true;
+function checkHit(tx, ty, size){
+    if(!laserPos) return false;
+
+    if(laserNow && !lastLaserOn){
+        fireShot(); //
+
+        const lx = sx(laserPos[0]);
+        const ly = sy(laserPos[1]);
+
+        if(
+            lx >= tx &&
+            lx <= tx + size &&
+            ly >= ty &&
+            ly <= ty + size
+        ){
+            return true;
+        }
     }
     return false;
 }
 
-// ===== HIT CHECK =====
-function hit(tx, ty){
-    if(!laserPos) return false;
-    const lx = laserPos[0], ly = laserPos[1];
-    return lx > tx && lx < tx + IMAGE_SIZE && ly > ty && ly < ty + IMAGE_SIZE;
-}
 
 // ===== MAIN LOOP =====
+function shotFired(){
+    return false;
+}
+
 function loop(){
     ctx.clearRect(0,0,canvas.width,canvas.height);
     const now = Date.now();
     const fired = shotFired();
+    const SIZE = imageSize();
     let tx=0, ty=0;
 
     // ===== PHASE 1 =====
     if(phase===1){
-        tx = canvas.width/2 - IMAGE_SIZE/2;
-        ty = canvas.height/2 - IMAGE_SIZE/2;
-        ctx.drawImage(targets[0], tx, ty, IMAGE_SIZE, IMAGE_SIZE);
+        tx = canvas.width/2 - SIZE/2;
+        ty = canvas.height/2 - SIZE/2;
+        ctx.drawImage(targets[0], tx, ty, SIZE, SIZE);
 
-        if(fired && hit(tx,ty)){
-            score++; hits++;
-            hitSound.play();
+        if(checkHit(tx, ty, SIZE)){
+            score++;
             phase=2; subTarget=2; phaseStart=now;
         }
-        if(now - phaseStart > TARGET_TIME){
+        if(now-phaseStart>TARGET_TIME){
             phase=2; subTarget=2; phaseStart=now;
         }
     }
 
     // ===== PHASE 2 =====
     else if(phase===2){
-        ty = canvas.height/2 - IMAGE_SIZE/2;
-        const tx2 = 150, tx3 = canvas.width-IMAGE_SIZE-150;
-        if(subTarget===2) ctx.drawImage(targets[1], tx2, ty, IMAGE_SIZE, IMAGE_SIZE);
-        else ctx.drawImage(targets[2], tx3, ty, IMAGE_SIZE, IMAGE_SIZE);
+        ty = canvas.height/2 - SIZE/2;
+        const gap = canvas.width * 0.18;
+        const centerX = canvas.width / 2;
 
-        if(fired && hit(subTarget===2 ? tx2 : tx3, ty)){
-            score++; hits++;
-            hitSound.play();
-            if(subTarget===2){ subTarget=3; phaseStart=now; }
-            else { phase=4; phaseStart=now; }
+        const tx2 = centerX - gap - SIZE/2;
+        const tx3 = centerX + gap - SIZE/2;
+
+        const drawX = subTarget===2 ? tx2 : tx3;
+        ctx.drawImage(subTarget===2?targets[1]:targets[2], drawX, ty, SIZE, SIZE);
+
+        if(checkHit(drawX, ty, SIZE)){
+            score++;
+            if(subTarget===2){
+                subTarget=3;
+                phaseStart=now;
+            } else {
+                phase=4;
+                phaseStart=now;
+            }
         }
 
-        if(subTarget===2 && now - phaseStart > 10000){ subTarget=3; phaseStart=now; }
-        else if(subTarget===3 && now - phaseStart > 5000){ phase=4; phaseStart=now; }
+        if(subTarget===2 && now-phaseStart>10000){ subTarget=3; phaseStart=now; }
+        if(subTarget===3 && now-phaseStart>5000){ phase=4; phaseStart=now; }
     }
 
     // ===== PHASE 4 =====
     else if(phase===4){
-        moveX += direction*6;
-        if(moveX<50 || moveX>canvas.width-IMAGE_SIZE-50) direction*=-1;
-        ty = canvas.height/2 - IMAGE_SIZE/2;
-        ctx.drawImage(targets[3], moveX, ty, IMAGE_SIZE, IMAGE_SIZE);
+        moveX += direction*8;
+        if(moveX<50 || moveX>canvas.width-SIZE-50) direction*=-1;
+        ty = canvas.height/2 - SIZE/2;
+        ctx.drawImage(targets[3], moveX, ty, SIZE, SIZE);
 
-        if(fired && hit(moveX, ty)){
-            score++; hits++;
-            hitSound.play();
-            if(round<MAX_ROUND){
-                round++; phase=1; phaseStart=now; bullets=0; score=0;
+        if(checkHit(moveX, ty, SIZE)){
+            score++;
+
+            if(round < MAX_ROUND){
+                round++;
+                phase = 1;
+                phaseStart = now;
             } else {
-                phase=99; ttsPlayed=false;
+                phase = 99;
             }
         }
 
         if(now - phaseStart > TARGET_TIME){
-            if(round<MAX_ROUND){ round++; phase=1; phaseStart=now; bullets=0; score=0; }
-            else { phase=99; ttsPlayed=false; }
+            if(round < MAX_ROUND){
+                round++;
+                phase = 1;
+                phaseStart = now;
+            } else {
+                phase = 99;
+            }
         }
     }
 
-    // ===== DRAW LASER =====
-    if(laserPos){
-        ctx.fillStyle="red";
-        ctx.beginPath();
-        ctx.arc(laserPos[0], laserPos[1], 6, 0, Math.PI*2);
-        ctx.fill();
-    }
+    // // ===== DRAW LASER (SCALE) =====
+    // if(laserPos){
+    //     const lx = sx(laserPos[0]);
+    //     const ly = sy(laserPos[1]);
+    //
+    //     ctx.strokeStyle = "yellow";
+    //     ctx.lineWidth = 2;
+    //     ctx.beginPath();
+    //     ctx.arc(lx, ly, 7, 0, Math.PI*2);
+    //     ctx.stroke();
+    //
+    //     ctx.fillStyle = "rgba(255,255,0,0.9)";
+    //     ctx.beginPath();
+    //     ctx.arc(lx, ly, 3, 0, Math.PI*2);
+    //     ctx.fill();
+    // }
 
-    // ===== RESULTS + BẢNG =====
+    // ===== RESULT =====
     if(phase===99){
-        // nền đen
-        ctx.fillStyle = "black";
-        ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle="black";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
 
-        const rank = score>=4?"GIOI":score===3?"KHA":score===2?"DAT":"KHONG DAT";
-        const nowStr = new Date().toLocaleString();
+    const rank =
+        score>=4 ? "GIOI" :
+        score===3 ? "KHA" :
+        score===2 ? "DAT" : "KHONG DAT";
 
+    // ===== TITLE =====
+    ctx.fillStyle="yellow";
+    ctx.font="bold 52px Arial";
+    ctx.textAlign="center";
+    ctx.fillText(`KET QUA: ${rank}`, canvas.width/2, 120);
+
+    // ===== RESULT TABLE =====
+    const tableW = 620;
+    const rowH = 50;
+    const rows = [
+        ["ROUND", round.toString()],
+        ["SCORE", score.toString()],
+        ["SO DAN", `${bullets}/${MAX_BULLETS}`],
+        ["XEP LOAI", rank],
+    ];
+
+    const tableH = rowH * rows.length;
+    const tx = canvas.width/2 - tableW/2;
+    const ty = 180;
+
+    // nền
+    ctx.fillStyle = "#222";
+    ctx.fillRect(tx, ty, tableW, tableH);
+
+    // viền
+    ctx.strokeStyle = "yellow";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(tx, ty, tableW, tableH);
+
+    ctx.font="24px Arial";
+    ctx.textAlign="left";
+
+    rows.forEach((r,i)=>{
+        const y = ty + i*rowH;
+
+        // line
+        ctx.strokeStyle="yellow";
+        ctx.lineWidth=1;
+        ctx.beginPath();
+        ctx.moveTo(tx, y);
+        ctx.lineTo(tx+tableW, y);
+        ctx.stroke();
+
+        // label
+        ctx.fillStyle="white";
+        ctx.fillText(r[0], tx+20, y+34);
+
+        // value
         ctx.fillStyle="yellow";
-        ctx.font="50px Arial";
-        ctx.fillText(`KET QUA VONG ${round}: ${rank}`, canvas.width/2-220, 100);
+        ctx.fillText(r[1], tx+340, y+34);
+    });
 
-        // bảng kết quả
-        const tableX = 360, tableY = 180;
-        const rowH = 45, colW1 = 260, colW2 = 360;
-        const rows = [
-            ["THOI GIAN", nowStr],
-            ["SCORE", score.toString()],
-            ["SO DAN", `${bullets}/${MAX_BULLETS}`],
-            ["XEP LOAI", rank]
-        ];
+    // hint
+    ctx.fillStyle="white";
+    ctx.font="22px Arial";
+    ctx.textAlign="center";
+    ctx.fillText("NHAN R DE RESET", canvas.width/2, ty+tableH+60);
 
-        ctx.fillStyle = "#282828";
-        ctx.fillRect(tableX, tableY, colW1+colW2, rowH*rows.length);
-
-        ctx.strokeStyle = "yellow";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(tableX, tableY, colW1+colW2, rowH*rows.length);
-
-        ctx.strokeStyle = "yellow";
-        ctx.lineWidth = 1;
-        ctx.font = "24px Arial";
-        ctx.fillStyle = "white";
-
-        rows.forEach((r,i)=>{
-            const y = tableY + i*rowH;
-            ctx.beginPath();
-            ctx.moveTo(tableX, y);
-            ctx.lineTo(tableX+colW1+colW2, y);
-            ctx.stroke();
-            ctx.fillText(r[0], tableX+10, y+32);
-            ctx.fillText(r[1], tableX+colW1+20, y+32);
-        });
-
-        // nhắc reset
-        ctx.fillStyle = "white";
-        ctx.font = "28px Arial";
-        ctx.fillText("NHAN R DE RESET", tableX+60, tableY+rowH*rows.length + 40);
-
-        // phát âm thanh 1 lần
-        if(!ttsPlayed){
-            resultSounds[rank].play();
-            ttsPlayed=true;
-        }
-    }
+    if (!ttsPlayed && audioUnlocked) {
+    const snd = resultSounds[rank];
+    snd.pause();
+    snd.currentTime = 0;
+    snd.play().catch(() => {});
+    ttsPlayed = true;
+}
+}
 
     // ===== HUD =====
     if(phase!==99){
-        ctx.fillStyle="lime"; ctx.font="25px Arial";
+        ctx.fillStyle="lime";
+        ctx.font="24px Arial";
         ctx.fillText(`ROUND: ${round}`,20,30);
         ctx.fillText(`SCORE: ${score}`,20,60);
         ctx.fillText(`SHOT: ${bullets}/${MAX_BULLETS}`,20,90);
     }
 
-    laserPrev = laserNow;
+    lastLaserOn = laserNow;
     requestAnimationFrame(loop);
 }
+if (!audioUnlocked) {
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(0, canvas.height - 80, canvas.width, 80);
 
-// ===== RESET PHÍM R =====
-window.addEventListener("keydown", e=>{
+    ctx.fillStyle = "yellow";
+    ctx.font = "24px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(
+        "CLICK CHUOT HOAC NHAN PHIM BAT KY DE BAT AM THANH",
+        canvas.width / 2,
+        canvas.height - 30
+    );
+}
+
+// ===== RESET =====
+window.addEventListener("keydown",e=>{
     if(e.key==="r" && phase===99){
-        score = bullets = hits = 0;
-        phase = 1; subTarget = 2; round = 1;
-        phaseStart = Date.now();
-        lastShot = 0; laserPrev = false;
-        moveX = 100; direction = 1; ttsPlayed=false;
+        score=bullets=0;
+        phase=1; subTarget=2; round=1;
+        phaseStart=Date.now();
+        lastShot=0; laserPrev=false;
+        moveX=100; direction=1; ttsPlayed=false;
     }
 });
 
