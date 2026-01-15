@@ -4,18 +4,30 @@
 <meta charset="UTF-8">
 <title>Laser Target Trainer</title>
 <style>
-  html, body {
-    margin: 0;
-    padding: 0;
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-    background: #111;
-  }
-  canvas {
-    display: block;
-    background: #000;
-  }
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&display=swap');
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: radial-gradient(circle at center, #1a1a1a 0%, #050505 70%);
+  font-family: 'Orbitron', Arial, sans-serif;
+}
+
+canvas {
+  display: block;
+  background:
+    radial-gradient(circle at center, rgba(255,255,255,0.04), rgba(0,0,0,0.95)),
+    repeating-linear-gradient(
+      0deg,
+      rgba(255,255,255,0.02) 0px,
+      rgba(255,255,255,0.02) 1px,
+      transparent 2px,
+      transparent 4px
+    );
+}
 </style>
 </head>
 <body>
@@ -28,6 +40,8 @@ const ctx = canvas.getContext("2d");
 const CAM_W = 1280;
 const CAM_H = 720;
 let audioUnlocked = false;
+let assetsReady = false;
+let loadedCount = 0;
 
 // ===== FULLSCREEN RESIZE =====
 function resizeCanvas(){
@@ -63,18 +77,33 @@ let lastShot = 0, laserPrev = false;
 let moveX = 100, direction = 1;
 let ttsPlayed = false;
 let lastLaserOn = false;
+let timeoutHandled = false;
 
 // ===== LOAD TARGETS =====
 const targets = [];
+const TOTAL_TARGETS = 4;
+
 for(let i=1;i<=4;i++){
     const img = new Image();
     img.src = `/static/images/target${i}.png`;
+    img.onload = () => {
+        loadedCount++;
+        if(loadedCount === TOTAL_TARGETS){
+            assetsReady = true;
+            console.log("✅ All targets loaded");
+        }
+    };
+
+    img.onerror = () => {
+        console.error("❌ Failed load target", img.src);
+    };
     targets.push(img);
 }
 
 // ===== LOAD SOUNDS =====
-function fireShot(){
+function fireTimeoutShot(){
     bullets++;
+    lastShot = Date.now();
 
     if(audioUnlocked){
         hitSound.pause();
@@ -141,99 +170,187 @@ setInterval(fetchLaser, 30);
 function checkHit(tx, ty, size){
     if(!laserPos) return false;
 
-    if(laserNow && !lastLaserOn){
-        fireShot(); //
+    const lx = laserPos[0];
+    const ly = laserPos[1];
 
-        const lx = sx(laserPos[0]);
-        const ly = sy(laserPos[1]);
+    return (
+        lx >= tx &&
+        lx <= tx + size &&
+        ly >= ty &&
+        ly <= ty + size
+    );
+}
 
-        if(
-            lx >= tx &&
-            lx <= tx + size &&
-            ly >= ty &&
-            ly <= ty + size
-        ){
-            return true;
+
+
+function fireShot(){
+    bullets++;
+    lastShot = Date.now();
+
+    if(audioUnlocked){
+        hitSound.pause();
+        hitSound.currentTime = 0;
+        hitSound.play().catch(()=>{});
+    }
+}
+// ===== MAIN LOOP =====
+    function shotFired(){
+    const now = Date.now();
+
+    const fired =
+        laserNow &&
+        !lastLaserOn &&
+        now - lastShot > SHOT_COOLDOWN &&
+        bullets < MAX_BULLETS;
+
+    if (fired) {
+        bullets++;
+        lastShot = now;
+
+        if(audioUnlocked){
+            hitSound.pause();
+            hitSound.currentTime = 0;
+            hitSound.play().catch(()=>{});
         }
     }
-    return false;
+
+    return fired;
 }
 
-
-// ===== MAIN LOOP =====
-function shotFired(){
-    return false;
-}
-
-function loop(){
-    ctx.clearRect(0,0,canvas.width,canvas.height);
+function loop() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     const now = Date.now();
     const fired = shotFired();
     const SIZE = imageSize();
-    let tx=0, ty=0;
+    console.log("laserNow:", laserNow);
+    let tx = 0, ty = 0;
+
+    if (bullets >= MAX_BULLETS && phase !== 99) {
+        phase = 99;
+    }
+        // ===== AUDIO LOCK OVERLAY =====
+    if (!audioUnlocked) {
+        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = "yellow";
+        ctx.font = "600 28px Orbitron";
+        ctx.textAlign = "center";
+        ctx.fillText(
+            "NHAN PHIM BAT KY / CLICK CHUOT",
+            canvas.width / 2,
+            canvas.height / 2 - 10
+        );
+
+        ctx.font = "18px Orbitron";
+        ctx.fillStyle = "white";
+        ctx.fillText(
+            "KICH HOAT HE THONG AM THANH",
+            canvas.width / 2,
+            canvas.height / 2 + 30
+        );
+
+        lastLaserOn = laserNow;
+        requestAnimationFrame(loop);
+        return;
+    }
 
     // ===== PHASE 1 =====
-    if(phase===1){
-        tx = canvas.width/2 - SIZE/2;
-        ty = canvas.height/2 - SIZE/2;
+    if (phase === 1) {
+        tx = canvas.width / 2 - SIZE / 2;
+        ty = canvas.height / 2 - SIZE / 2;
         ctx.drawImage(targets[0], tx, ty, SIZE, SIZE);
 
-        if(checkHit(tx, ty, SIZE)){
+       if (fired && checkHit(tx, ty, SIZE)) {
             score++;
-            phase=2; subTarget=2; phaseStart=now;
+            phase = 2;
+            subTarget = 2;
+            phaseStart = now;
+            timeoutHandled = false;
+            // return;
         }
-        if(now-phaseStart>TARGET_TIME){
-            phase=2; subTarget=2; phaseStart=now;
+       if(!timeoutHandled && now - phaseStart > TARGET_TIME){
+            timeoutHandled = true;
+            fireTimeoutShot();
+
+            phase = 2;
+            subTarget = 2;
+            phaseStart = now;
+            // return;
         }
     }
 
     // ===== PHASE 2 =====
-    else if(phase===2){
-        ty = canvas.height/2 - SIZE/2;
+    else if (phase === 2) {
+        ty = canvas.height / 2 - SIZE / 2;
         const gap = canvas.width * 0.18;
         const centerX = canvas.width / 2;
 
-        const tx2 = centerX - gap - SIZE/2;
-        const tx3 = centerX + gap - SIZE/2;
+        const tx2 = centerX - gap - SIZE / 2;
+        const tx3 = centerX + gap - SIZE / 2;
 
-        const drawX = subTarget===2 ? tx2 : tx3;
-        ctx.drawImage(subTarget===2?targets[1]:targets[2], drawX, ty, SIZE, SIZE);
+        const drawX = subTarget === 2 ? tx2 : tx3;
+        ctx.drawImage(subTarget === 2 ? targets[1] : targets[2], drawX, ty, SIZE, SIZE);
 
-        if(checkHit(drawX, ty, SIZE)){
+        if (fired && checkHit(drawX, ty, SIZE)) {
             score++;
-            if(subTarget===2){
-                subTarget=3;
-                phaseStart=now;
+            timeoutHandled = false;
+
+            if (subTarget === 2) {
+                subTarget = 3;
+                phaseStart = now;
             } else {
-                phase=4;
-                phaseStart=now;
+                phase = 4;
+                phaseStart = now;
             }
+            // return;
         }
 
-        if(subTarget===2 && now-phaseStart>10000){ subTarget=3; phaseStart=now; }
-        if(subTarget===3 && now-phaseStart>5000){ phase=4; phaseStart=now; }
-    }
+        if(subTarget === 2 && !timeoutHandled && now - phaseStart > 10000){
+            timeoutHandled = true;
+            fireTimeoutShot();
 
+            subTarget = 3;
+            phaseStart = now;
+
+            // return;
+        }
+
+        if(subTarget === 3 && !timeoutHandled && now - phaseStart > 5000){
+            timeoutHandled = true;
+            fireTimeoutShot();
+
+            phase = 4;
+            phaseStart = now;
+
+            // return;
+        }
+    }
     // ===== PHASE 4 =====
-    else if(phase===4){
-        moveX += direction*8;
-        if(moveX<50 || moveX>canvas.width-SIZE-50) direction*=-1;
-        ty = canvas.height/2 - SIZE/2;
+    else if (phase === 4) {
+        moveX += direction * 8;
+        if (moveX < 50 || moveX > canvas.width - SIZE - 50) direction *= -1;
+        ty = canvas.height / 2 - SIZE / 2;
         ctx.drawImage(targets[3], moveX, ty, SIZE, SIZE);
 
-        if(checkHit(moveX, ty, SIZE)){
+        if (fired && checkHit(moveX, ty, SIZE)) {
             score++;
+            timeoutHandled = false;
 
-            if(round < MAX_ROUND){
+            if (round < MAX_ROUND) {
                 round++;
                 phase = 1;
                 phaseStart = now;
             } else {
                 phase = 99;
             }
+            // return;
         }
 
-        if(now - phaseStart > TARGET_TIME){
+        if(!timeoutHandled && now - phaseStart > TARGET_TIME){
+            timeoutHandled = true;
+            fireTimeoutShot();
+
             if(round < MAX_ROUND){
                 round++;
                 phase = 1;
@@ -241,43 +358,52 @@ function loop(){
             } else {
                 phase = 99;
             }
+
+            // return;
         }
     }
 
-    // // ===== DRAW LASER (SCALE) =====
-    // if(laserPos){
-    //     const lx = sx(laserPos[0]);
-    //     const ly = sy(laserPos[1]);
-    //
-    //     ctx.strokeStyle = "yellow";
-    //     ctx.lineWidth = 2;
-    //     ctx.beginPath();
-    //     ctx.arc(lx, ly, 7, 0, Math.PI*2);
-    //     ctx.stroke();
-    //
-    //     ctx.fillStyle = "rgba(255,255,0,0.9)";
-    //     ctx.beginPath();
-    //     ctx.arc(lx, ly, 3, 0, Math.PI*2);
-    //     ctx.fill();
-    // }
+    // ===== DRAW LASER (SCALE) =====
+    if(laserPos){
+    const lx = laserPos[0];
+    const ly = laserPos[1];
+
+    // vòng ngoài
+    ctx.strokeStyle = "rgba(255,255,0,0.8)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(lx, ly, 10, 0, Math.PI*2);
+    ctx.stroke();
+
+    // tâm laser
+    ctx.fillStyle = "rgba(255,255,0,1)";
+    ctx.beginPath();
+    ctx.arc(lx, ly, 4, 0, Math.PI*2);
+    ctx.fill();
+
+    // glow
+    ctx.fillStyle = "rgba(255,255,0,0.25)";
+    ctx.beginPath();
+    ctx.arc(lx, ly, 18, 0, Math.PI*2);
+    ctx.fill();
+}
 
     // ===== RESULT =====
-    if(phase===99){
-    ctx.fillStyle="black";
-    ctx.fillRect(0,0,canvas.width,canvas.height);
+    if (phase === 99) {
 
     const rank =
-        score>=4 ? "GIOI" :
-        score===3 ? "KHA" :
-        score===2 ? "DAT" : "KHONG DAT";
+        score >= 4 ? "GIOI" :
+        score === 3 ? "KHA" :
+        score === 2 ? "DAT" : "KHONG DAT";
 
-    // ===== TITLE =====
-    ctx.fillStyle="yellow";
-    ctx.font="bold 52px Arial";
-    ctx.textAlign="center";
-    ctx.fillText(`KET QUA: ${rank}`, canvas.width/2, 120);
+    ctx.fillStyle = "yellow";
+    ctx.font = "800 56px Orbitron";
+    ctx.textAlign = "center";
+    ctx.fillText("KET QUA BAN TAP", canvas.width / 2, 90);
 
-    // ===== RESULT TABLE =====
+    ctx.font = "600 42px Orbitron";
+    ctx.fillText(rank, canvas.width / 2, 150);
+
     const tableW = 620;
     const rowH = 50;
     const rows = [
@@ -288,83 +414,67 @@ function loop(){
     ];
 
     const tableH = rowH * rows.length;
-    const tx = canvas.width/2 - tableW/2;
+    const tx = canvas.width / 2 - tableW / 2;
     const ty = 180;
 
-    // nền
     ctx.fillStyle = "#222";
     ctx.fillRect(tx, ty, tableW, tableH);
 
-    // viền
     ctx.strokeStyle = "yellow";
     ctx.lineWidth = 3;
     ctx.strokeRect(tx, ty, tableW, tableH);
 
-    ctx.font="24px Arial";
-    ctx.textAlign="left";
+    ctx.font = "24px Orbitron";
+    ctx.textAlign = "left";
 
-    rows.forEach((r,i)=>{
-        const y = ty + i*rowH;
-
-        // line
-        ctx.strokeStyle="yellow";
-        ctx.lineWidth=1;
-        ctx.beginPath();
-        ctx.moveTo(tx, y);
-        ctx.lineTo(tx+tableW, y);
-        ctx.stroke();
-
-        // label
-        ctx.fillStyle="white";
-        ctx.fillText(r[0], tx+20, y+34);
-
-        // value
-        ctx.fillStyle="yellow";
-        ctx.fillText(r[1], tx+340, y+34);
+    rows.forEach((r, i) => {
+        const y = ty + i * rowH;
+        ctx.fillStyle = "white";
+        ctx.fillText(r[0], tx + 20, y + 34);
+        ctx.fillStyle = "yellow";
+        ctx.fillText(r[1], tx + 340, y + 34);
     });
 
-    // hint
-    ctx.fillStyle="white";
-    ctx.font="22px Arial";
-    ctx.textAlign="center";
-    ctx.fillText("NHAN R DE RESET", canvas.width/2, ty+tableH+60);
+    ctx.fillStyle = "white";
+    ctx.font = "22px Orbitron";
+    ctx.textAlign = "center";
+    ctx.fillText("NHAN R DE RESET", canvas.width / 2, ty + tableH + 60);
 
     if (!ttsPlayed && audioUnlocked) {
-    const snd = resultSounds[rank];
-    snd.pause();
-    snd.currentTime = 0;
-    snd.play().catch(() => {});
-    ttsPlayed = true;
-}
+        resultSounds[rank].play().catch(()=>{});
+        ttsPlayed = true;
+    }
 }
 
     // ===== HUD =====
-    if(phase!==99){
-        ctx.fillStyle="lime";
-        ctx.font="24px Arial";
-        ctx.fillText(`ROUND: ${round}`,20,30);
-        ctx.fillText(`SCORE: ${score}`,20,60);
-        ctx.fillText(`SHOT: ${bullets}/${MAX_BULLETS}`,20,90);
-    }
+    if (phase !== 99) {
+        // nền HUD
+        ctx.fillStyle = "rgba(0,0,0,0.45)";
+        ctx.fillRect(10, 10, 260, 110);
 
+        ctx.strokeStyle = "lime";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(10, 10, 260, 110);
+
+        ctx.fillStyle = "lime";
+        ctx.font = "18px Orbitron";
+        ctx.textAlign = "left";
+
+        ctx.fillText(`ROUND`, 25, 40);
+        ctx.fillText(`SCORE`, 25, 70);
+        ctx.fillText(`AMMO`, 25, 100);
+
+        ctx.fillStyle = "yellow";
+        ctx.textAlign = "right";
+        ctx.fillText(round, 250, 40);
+        ctx.fillText(score, 250, 70);
+        ctx.fillText(`${bullets}/${MAX_BULLETS}`, 250, 100);
+    }
     lastLaserOn = laserNow;
     requestAnimationFrame(loop);
 }
-if (!audioUnlocked) {
-    ctx.fillStyle = "rgba(0,0,0,0.6)";
-    ctx.fillRect(0, canvas.height - 80, canvas.width, 80);
 
-    ctx.fillStyle = "yellow";
-    ctx.font = "24px Arial";
-    ctx.textAlign = "center";
-    ctx.fillText(
-        "CLICK CHUOT HOAC NHAN PHIM BAT KY DE BAT AM THANH",
-        canvas.width / 2,
-        canvas.height - 30
-    );
-}
-
-// ===== RESET =====
+   // ===== RESET =====
 window.addEventListener("keydown",e=>{
     if(e.key==="r" && phase===99){
         score=bullets=0;
@@ -372,10 +482,11 @@ window.addEventListener("keydown",e=>{
         phaseStart=Date.now();
         lastShot=0; laserPrev=false;
         moveX=100; direction=1; ttsPlayed=false;
+        timeoutHandled = false;
     }
 });
 
-loop();
+requestAnimationFrame(loop);
 </script>
 </body>
 </html>
